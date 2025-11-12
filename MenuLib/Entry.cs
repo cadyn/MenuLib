@@ -11,7 +11,7 @@ using Object = UnityEngine.Object;
 
 namespace MenuLib;
 
-[BepInPlugin("nickklmao.menulib", MOD_NAME, "2.5.0")]
+[BepInPlugin("nickklmao.menulib", MOD_NAME, "2.5.1")]
 internal sealed class Entry : BaseUnityPlugin
 {
     private const string MOD_NAME = "Menu Lib";
@@ -133,9 +133,69 @@ internal sealed class Entry : BaseUnityPlugin
     private static void MenuScrollBox_UpdateILHook(ILContext il)
     {
         var cursor = new ILCursor(il);
+        
+        cursor.GotoNext(instruction => instruction.MatchLdarg(0),
+            instruction => instruction.MatchLdarg(0),
+            instruction => instruction.MatchLdfld<MenuScrollBox>("scrollHandleTargetPosition"));
 
+        var startIndex = cursor.Index;
+        
+        cursor.GotoNext(instruction => instruction.MatchCall<Mathf>("Lerp"));
+        cursor.GotoPrev(instruction => instruction.MatchStfld<MenuScrollBox>("scrollHandleTargetPosition"));
+
+        var endIndex = cursor.Index;
+        
+        cursor.Index = startIndex;
+        cursor.RemoveRange(endIndex - startIndex + 1);
+        var postIfLabel = cursor.MarkLabel();
+        
+        cursor.GotoPrev(instruction => instruction.OpCode == OpCodes.Brfalse_S);
+        cursor.Remove();
+        cursor.Emit(OpCodes.Brfalse_S, postIfLabel);
+
+        cursor.Emit(OpCodes.Ldarg_0);
+        cursor.Emit(OpCodes.Ldarg_0);
+        cursor.Emit<MenuScrollBox>(OpCodes.Ldfld, "parentPage");
+        cursor.EmitDelegate((MenuScrollBox menuScrollBox, MenuPage menuPage) => {
+            var yMovementInput = SemiFunc.InputMovementY() / 20f;
+            var yMouseScroll = SemiFunc.InputScrollY();
+
+            float amountToScroll;
+
+            if (MenuAPI.customMenuPages.TryGetValue(menuPage, out var repoPopupPage) && repoPopupPage.scrollView.scrollSpeed is { } constantScrollSpeed)
+            {
+                constantScrollSpeed *= 10f;
+
+                var scrollableHeight = Mathf.Abs((float) REPOReflection.menuScrollBox_ScrollerEndPosition.GetValue(menuScrollBox) - (float) REPOReflection.menuScrollBox_ScrollerStartPosition.GetValue(menuScrollBox));
+                amountToScroll = (yMovementInput + Math.Sign(yMouseScroll)) * constantScrollSpeed / scrollableHeight * menuScrollBox.scrollBarBackground.rect.height;
+            }
+            else
+            {
+                var scrollHeight = (float) REPOReflection.menuScrollBox_ScrollHeight.GetValue(menuScrollBox);
+                amountToScroll = yMovementInput / (scrollHeight * 0.01f) + yMouseScroll / (scrollHeight * 0.01f);
+            }
+
+            var currentHandlePosition = (float) REPOReflection.menuScrollBox_ScrollHandleTargetPosition.GetValue(menuScrollBox);
+            REPOReflection.menuScrollBox_ScrollHandleTargetPosition.SetValue(menuScrollBox, currentHandlePosition + amountToScroll);
+        });
+        
+        cursor.GotoNext(instruction => instruction.MatchStfld<MenuScrollBox>("scrollAmount"));
+        cursor.Index -= 13;
+        cursor.RemoveRange(14);
+        cursor.EmitDelegate((MenuScrollBox instance) =>
+        {
+            float scrollAmount;
+            if (MenuAPI.customMenuPages.ContainsKey((MenuPage) REPOReflection.menuScrollBox_ParentPage.GetValue(instance)))
+                scrollAmount = (instance.scrollHandle.localPosition.y + instance.scrollHandle.sizeDelta.y / 2f) / instance.scrollBarBackground.rect.height;
+            else
+                scrollAmount = instance.scrollHandle.localPosition.y / instance.scrollBarBackground.rect.height * 1.1f;
+
+            REPOReflection.menuScrollBox_ScrollAmount.SetValue(instance, scrollAmount);
+        });
+        
+        /*
         cursor.GotoNext(instruction => instruction.MatchLdarg(0), instruction => instruction.MatchLdfld<MenuScrollBox>("scrollBoxActive"));
-            
+
         cursor.RemoveRange(4);
 
         var returnLabel = cursor.MarkLabel();
@@ -145,17 +205,17 @@ internal sealed class Entry : BaseUnityPlugin
         cursor.Emit(OpCodes.Brtrue_S, returnLabel);
 
         cursor.GotoNext(instruction => instruction.MatchCall(typeof(SemiFunc), "InputScrollY"));
-            
+
         cursor.Index--;
         cursor.Remove();
-            
+
         var customScrollLogicLabel = cursor.DefineLabel();
         cursor.Emit(OpCodes.Bne_Un_S, customScrollLogicLabel);
 
         cursor.Index += 2;
-            
+
         var postIfLabel = il.Instrs[cursor.Index].Operand as ILLabel;
-            
+
         cursor.Index++;
         cursor.RemoveRange(24);
         cursor.MarkLabel(customScrollLogicLabel);
@@ -171,7 +231,7 @@ internal sealed class Entry : BaseUnityPlugin
             if (MenuAPI.customMenuPages.TryGetValue(menuPage, out var repoPopupPage) && repoPopupPage.scrollView.scrollSpeed is { } constantScrollSpeed)
             {
                 constantScrollSpeed *= 10f;
-                    
+
                 var scrollableHeight = Mathf.Abs((float) REPOReflection.menuScrollBox_ScrollerEndPosition.GetValue(menuScrollBox) - (float) REPOReflection.menuScrollBox_ScrollerStartPosition.GetValue(menuScrollBox));
                 amountToScroll = (yMovementInput + Math.Sign(yMouseScroll)) * constantScrollSpeed / scrollableHeight * menuScrollBox.scrollBarBackground.rect.height;
             }
@@ -180,13 +240,13 @@ internal sealed class Entry : BaseUnityPlugin
                 var scrollHeight = (float) REPOReflection.menuScrollBox_ScrollHeight.GetValue(menuScrollBox);
                 amountToScroll = yMovementInput / (scrollHeight * 0.01f) + yMouseScroll / (scrollHeight * 0.01f);
             }
-             
+
             var currentHandlePosition = (float) REPOReflection.menuScrollBox_ScrollHandleTargetPosition.GetValue(menuScrollBox);
             REPOReflection.menuScrollBox_ScrollHandleTargetPosition.SetValue(menuScrollBox, currentHandlePosition + amountToScroll);
         });
-            
+
         cursor.GotoPrev(instruction => instruction.MatchCall(typeof(SemiFunc), "InputMovementY"));
-            
+
         var newLabel = cursor.MarkLabel();
         cursor.Emit(OpCodes.Ldarg_0);
         cursor.Emit<MenuScrollBox>(OpCodes.Ldfld, "scrollBoxActive");
@@ -195,7 +255,7 @@ internal sealed class Entry : BaseUnityPlugin
         cursor.GotoPrev(MoveType.After, instruction => instruction.MatchCall<Input>("GetMouseButton"));
         cursor.Remove();
         cursor.Emit(OpCodes.Brfalse, newLabel);
-            
+
         cursor.GotoNext(MoveType.After, instruction => instruction.MatchCall(typeof(SemiFunc), "UIMouseHover"));
         cursor.Remove();
         cursor.Emit(OpCodes.Brfalse, newLabel);
@@ -210,9 +270,9 @@ internal sealed class Entry : BaseUnityPlugin
                 scrollAmount = (instance.scrollHandle.localPosition.y + instance.scrollHandle.sizeDelta.y / 2f) / instance.scrollBarBackground.rect.height;
             else
                 scrollAmount = instance.scrollHandle.localPosition.y / instance.scrollBarBackground.rect.height * 1.1f;
-                
+
             REPOReflection.menuScrollBox_ScrollAmount.SetValue(instance, scrollAmount);
-        });
+        });*/
     }
     
     private static void ChatManager_StateInactiveILHook(ILContext il)
@@ -259,8 +319,8 @@ internal sealed class Entry : BaseUnityPlugin
         logger.LogDebug("Hooking `MenuPage.StateClosing`");
         new ILHook(AccessTools.Method(typeof(MenuPage), "StateClosing"), MenuPage_StateClosingILHook);
             
-        logger.LogDebug("Hooking `MenuScrollBox.Update`");
-        new ILHook(AccessTools.Method(typeof(MenuScrollBox), "Update"), MenuScrollBox_UpdateILHook);
+        /*logger.LogDebug("Hooking `MenuScrollBox.Update`");
+        new ILHook(AccessTools.Method(typeof(MenuScrollBox), "Update"), MenuScrollBox_UpdateILHook);*/
         
         logger.LogDebug("Hooking `ChatManager.StateInactive`");
         new ILHook(AccessTools.Method(typeof(ChatManager), "StateInactive"), ChatManager_StateInactiveILHook);
